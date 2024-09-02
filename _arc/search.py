@@ -130,7 +130,7 @@ class LLMAgentBase():
             response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
             assert len(response_json) == len(self.output_fields), "not returning enough fields"
         except Exception as e:
-            # print(e)
+            print(e)
             if "maximum context length" in str(e) and SEARCHING_MODE:
                 raise AssertionError("The context is too long. Please try to design the agent to have shorter context.")
             # try to fill in the missing field
@@ -292,15 +292,23 @@ def search(args):
         except Exception as e:
             print("During LLM generate new solution:")
             print(e)
-            continue
-        finally:
+            
             if PRINT_LLM_DEBUG:
-                if next_solution is not None:
+                # attempt to dump existing solution
+                try:
                     with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
                         json.dump(next_solution, json_file, indent=4)
-                else:
-                    with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
-                        json.dump({'exception': e}, json_file, indent=4)
+                except NameError:
+                    pass
+                # dump exception
+                with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'a') as json_file:
+                    json.dump({'exception': str(e)}, json_file, indent=4)
+            continue
+        else:
+            if PRINT_LLM_DEBUG:
+                # dump existing solution
+                with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
+                    json.dump(next_solution, json_file, indent=4)
 
         acc_list = []
         # eval next solution
@@ -470,7 +478,7 @@ if __name__ == "__main__":
                         json.dump(response_json, json_file, indent=4)
                 assert len(response_json) == len(self.output_fields), "not returning enough fields"
             except Exception as e:
-                # print(e)
+                print(e)
                 if "maximum context length" in str(e) and SEARCHING_MODE:
                     raise AssertionError("The context is too long. Please try to design the agent to have shorter context.")
                 # try to fill in the missing field

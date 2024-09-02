@@ -1,4 +1,4 @@
 - [x] JSON experiment setting
-- [ ] Design log
-  - [ ] next_solution reference in `finally` but not assigned in `try`
-  - [ ] exception output in `threadpool` in `evaluate_forward_fn`
+- [x] Design log
+  - [x] next_solution reference in `finally` but not assigned in `try`
+  - [X] exception output in `threadpool` in `evaluate_forward_fn`

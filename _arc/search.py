@@ -73,7 +73,7 @@ class LLMAgentBase():
     """
 
     def __init__(self, output_fields: list, agent_name: str,
-                 role='helpful assistant', model='gpt-3.5-turbo-0125', temperature=0.5) -> None:
+                 role='helpful assistant', model='gpt-4o-mini-2024-07-18', temperature=0.5) -> None:
         self.output_fields = output_fields
         self.agent_name = agent_name
 
@@ -235,7 +235,8 @@ class AgentSystem():
 
 
 def search(args):
-    file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
+    # get agent archieve
+    file_path = os.path.join(args.expr_home_dir, "run_archive.json")
     if os.path.exists(file_path):
         with open(file_path, 'r') as json_file:
             archive = json.load(json_file)
@@ -249,6 +250,7 @@ def search(args):
 
     for solution in archive:
         if 'fitness' in solution:
+            # don't eval what had been evaluated
             continue
 
         solution['generation'] = "initial"
@@ -291,8 +293,18 @@ def search(args):
             print("During LLM generate new solution:")
             print(e)
             continue
+        finally:
+            if PRINT_LLM_DEBUG:
+                if next_solution is not None:
+                    with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
+                        json.dump(next_solution, json_file, indent=4)
+                else:
+                    with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
+                        json.dump({'exception': e}, json_file, indent=4)
 
         acc_list = []
+        # eval next solution
+        # debug at most debug_max times for current agent
         for _ in range(args.debug_max):
             try:
                 acc_list = evaluate_forward_fn(args, next_solution["code"])
@@ -312,6 +324,7 @@ def search(args):
                     continue
                 continue
         if not acc_list:
+            # don't save result if no successful code runs had been made
             continue
 
         fitness_str = bootstrap_confidence_interval(acc_list)
@@ -331,8 +344,8 @@ def search(args):
 
 
 def evaluate(args):
-    file_path = os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")
-    eval_file_path = str(os.path.join(args.save_dir, f"{args.expr_name}_run_archive.json")).strip(".json") + "_evaluate.json"
+    file_path = os.path.join(args.expr_home_dir, "run_archive.json")
+    eval_file_path = file_path.strip(".json") + "_evaluate.json"
     with open(file_path, 'r') as json_file:
         archive = json.load(json_file)
     eval_archive = []
@@ -420,23 +433,60 @@ def evaluate_forward_fn(args, forward_str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--val_data_path', type=str, default='sampled_arc_val_data.pkl')
-    parser.add_argument('--test_data_path', type=str, default='sampled_arc_test_data.pkl')
+    parser.add_argument('--val_data_path', type=str, default='dataset/sampled_arc_val_data.pkl')
+    parser.add_argument('--test_data_path', type=str, default='dataset/sampled_arc_test_data.pkl')
     parser.add_argument('--n_repreat', type=int, default=5)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
     parser.add_argument('--max_workers', type=int, default=32)
     parser.add_argument('--debug', action='store_true', default=True)
     parser.add_argument('--save_dir', type=str, default='results/')
-    parser.add_argument('--expr_name', type=str, default='arc_gpt3.5_results')
+    parser.add_argument('--expr_name', type=str, default='arc_gpt4o_mini_results')
     parser.add_argument('--n_generation', type=int, default=25)
     parser.add_argument('--reflect_max', type=int, default=3)
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--model',
                         type=str,
-                        default='gpt-4o-2024-05-13',
-                        choices=['gpt-4-turbo-2024-04-09', 'gpt-3.5-turbo-0125', 'gpt-4o-2024-05-13'])
+                        default='gpt-4o-mini-2024-07-18',
+                        choices=['gpt-4o-mini-2024-07-18','gpt-4-turbo-2024-04-09', 'gpt-3.5-turbo-0125', 'gpt-4o-2024-05-13'])
 
     args = parser.parse_args()
+    args.expr_home_dir = os.path.join(args.save_dir, args.expr_name)
+    if not os.path.exists(args.expr_home_dir):
+        os.mkdir(args.expr_home_dir)
+    # Save args to a JSON file
+    args_file = os.path.join(args.expr_home_dir, 'config.json')
+    with open(args_file, 'w') as f:
+        json.dump(vars(args), f, indent=4)
+        
+    if args.debug:
+        PRINT_LLM_DEBUG = True
+        # enable LLMAgent debug
+        def query(self, input_infos: list, instruction, iteration_idx=-1) -> dict:
+            system_prompt, prompt = self.generate_prompt(input_infos, instruction)
+            try:
+                response_json = {}
+                response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
+                with open(os.path.join(args.expr_home_dir, f"experiment.json"), 'a') as json_file:
+                        json.dump(response_json, json_file, indent=4)
+                assert len(response_json) == len(self.output_fields), "not returning enough fields"
+            except Exception as e:
+                # print(e)
+                if "maximum context length" in str(e) and SEARCHING_MODE:
+                    raise AssertionError("The context is too long. Please try to design the agent to have shorter context.")
+                # try to fill in the missing field
+                for key in self.output_fields:
+                    if not key in response_json and len(response_json) < len(self.output_fields):
+                        response_json[key] = ''
+                for key in copy.deepcopy(list(response_json.keys())):
+                    if len(response_json) > len(self.output_fields) and not key in self.output_fields:
+                        del response_json[key]
+            output_infos = []
+            for key, value in response_json.items():
+                info = Info(key, self.__repr__(), value, iteration_idx)
+                output_infos.append(info)
+            return output_infos
+        setattr(LLMAgentBase, "query", query)
+        
     # search
     SEARCHING_MODE = True
     search(args)

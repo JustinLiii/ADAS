@@ -128,18 +128,19 @@ class LLMAgentBase():
         try:
             response_json = {}
             response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
-            assert len(response_json) == len(self.output_fields), "not returning enough fields"
+            if len(response_json) != len(self.output_fields):
+                # try to fill in the missing field
+                for key in self.output_fields:
+                    if not key in response_json and len(response_json) < len(self.output_fields):
+                        response_json[key] = ''
+                for key in copy.deepcopy(list(response_json.keys())):
+                    if len(response_json) > len(self.output_fields) and not key in self.output_fields:
+                        del response_json[key]
         except Exception as e:
-            print(e)
             if "maximum context length" in str(e) and SEARCHING_MODE:
                 raise AssertionError("The context is too long. Please try to design the agent to have shorter context.")
-            # try to fill in the missing field
-            for key in self.output_fields:
-                if not key in response_json and len(response_json) < len(self.output_fields):
-                    response_json[key] = ''
-            for key in copy.deepcopy(list(response_json.keys())):
-                if len(response_json) > len(self.output_fields) and not key in self.output_fields:
-                    del response_json[key]
+            else:
+                raise e
         output_infos = []
         for key, value in response_json.items():
             info = Info(key, self.__repr__(), value, iteration_idx)
@@ -259,8 +260,7 @@ def search(args):
             acc_list = evaluate_forward_fn(args, solution["code"])
         except Exception as e:
             print("During evaluating initial archive:")
-            print(e)
-            continue
+            raise e
 
         fitness_str = bootstrap_confidence_interval(acc_list)
         solution['fitness'] = fitness_str
@@ -373,8 +373,9 @@ def evaluate(args):
         try:
             acc_list = evaluate_forward_fn(args, sol["code"])
         except Exception as e:
-            print(e)
-            continue
+            # print(e)
+            # continue
+            raise e
         fitness_str = bootstrap_confidence_interval(acc_list)
         sol['test_fitness'] = fitness_str
         eval_archive.append(sol)
@@ -476,18 +477,20 @@ if __name__ == "__main__":
                 response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
                 with open(os.path.join(args.expr_home_dir, f"experiment.json"), 'a') as json_file:
                         json.dump(response_json, json_file, indent=4)
-                assert len(response_json) == len(self.output_fields), "not returning enough fields"
+                if len(response_json) != len(self.output_fields):
+                    # try to fill in the missing field
+                    for key in self.output_fields:
+                        if not key in response_json and len(response_json) < len(self.output_fields):
+                            response_json[key] = ''
+                    for key in copy.deepcopy(list(response_json.keys())):
+                        if len(response_json) > len(self.output_fields) and not key in self.output_fields:
+                            del response_json[key]
             except Exception as e:
-                print(e)
                 if "maximum context length" in str(e) and SEARCHING_MODE:
                     raise AssertionError("The context is too long. Please try to design the agent to have shorter context.")
-                # try to fill in the missing field
-                for key in self.output_fields:
-                    if not key in response_json and len(response_json) < len(self.output_fields):
-                        response_json[key] = ''
-                for key in copy.deepcopy(list(response_json.keys())):
-                    if len(response_json) > len(self.output_fields) and not key in self.output_fields:
-                        del response_json[key]
+                else:
+                    raise e
+                
             output_infos = []
             for key, value in response_json.items():
                 info = Info(key, self.__repr__(), value, iteration_idx)

@@ -1,4 +1,21 @@
-- [x] JSON experiment setting
-- [x] Design log
+- [ ] JSON experiment setting
+  - [X] Saving
+  - [ ] Reading
+- [X] Design log
   - [x] next_solution reference in `finally` but not assigned in `try`
   - [X] exception output in `threadpool` in `evaluate_forward_fn`
+  - [X] Use Logger
+- [ ] Outside configurable LLMAgentBase
+- [X] Better Experiment Naming
+- [ ] Batch API
+- [ ] Or
+  - [ ] Gemini API
+    - [ ] For Design
+    - [ ] For Agent
+  - [ ] Zhipu API
+    - [ ] For Design
+    - [X] For Agent
+    - [ ] Make GLM4-flash work  
+  - [ ] Other free models?
+  - [ ] Other deployable models?
+- [ ] Can we merge `get_json_response_from_gpt` and `get_json_response_from_gpt_reflect` ?

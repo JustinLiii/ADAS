@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import pickle
+import logging
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -13,7 +14,15 @@ from tqdm import tqdm
 
 from arc_prompt import get_init_archive, get_prompt, get_reflexion_prompt
 
-client = openai.OpenAI()
+# TODO: 为什么把这个初始化写在这里 （怒
+try:
+    client = openai.OpenAI()
+except openai.OpenAIError as e:
+    print('===============================================================')
+    print('Cannot initialize OpenAI client for following reason:')
+    print(f' - {e}')
+    print('Trying other clients')
+    print('===============================================================')
 
 from utils import random_id, format_arc_data, eval_solution, list_to_string, bootstrap_confidence_interval
 
@@ -34,7 +43,7 @@ def get_json_response_from_gpt(
         model,
         system_message,
         temperature=0.5
-):
+) -> dict:
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -44,7 +53,18 @@ def get_json_response_from_gpt(
         temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
     )
     content = response.choices[0].message.content
-    json_dict = json.loads(content)
+    
+    logger = logging.getLogger(__name__)
+    logger.debug('REQUEST\n' + str([
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": msg},
+        ]))
+    logger.debug('RESPONSE\n' + str(content))
+    
+    try:
+        json_dict = json.loads(content) #type: ignore
+    except:
+        json_dict = {}
     # cost = response.usage.completion_tokens / 1000000 * 15 + response.usage.prompt_tokens / 1000000 * 5
     assert not json_dict is None
     return json_dict
@@ -55,14 +75,22 @@ def get_json_response_from_gpt_reflect(
         msg_list,
         model,
         temperature=0.8
-):
+) -> dict:
     response = client.chat.completions.create(
         model=model,
         messages=msg_list,
         temperature=temperature, max_tokens=4096, stop=None, response_format={"type": "json_object"}
     )
     content = response.choices[0].message.content
-    json_dict = json.loads(content)
+    
+    logger = logging.getLogger(__name__)
+    logger.debug('REQUEST\n' + str(msg_list))
+    logger.debug('RESPONSE\n' + str(content))
+    
+    try:
+        json_dict = json.loads(content) #type: ignore
+    except:
+        json_dict = {}
     assert not json_dict is None
     return json_dict
 
@@ -73,7 +101,7 @@ class LLMAgentBase():
     """
 
     def __init__(self, output_fields: list, agent_name: str,
-                 role='helpful assistant', model='gpt-4o-mini-2024-07-18', temperature=0.5) -> None:
+                 role='helpful assistant', model='glm-4-flash', temperature=0.5) -> None:
         self.output_fields = output_fields
         self.agent_name = agent_name
 
@@ -84,7 +112,7 @@ class LLMAgentBase():
         # give each instance a unique id
         self.id = random_id()
 
-    def generate_prompt(self, input_infos, instruction) -> str:
+    def generate_prompt(self, input_infos, instruction) -> tuple[str, str]:
         code_output = False
 
         # construct system prompt
@@ -123,7 +151,7 @@ class LLMAgentBase():
         prompt = input_infos_text + "# Instruction: \n" + instruction + "\n\n" + (CODE_INST if code_output else '')
         return system_prompt, prompt
 
-    def query(self, input_infos: list, instruction, iteration_idx=-1) -> dict:
+    def query(self, input_infos: list, instruction, iteration_idx=-1) -> list[Info]:
         system_prompt, prompt = self.generate_prompt(input_infos, instruction)
         try:
             response_json = {}
@@ -292,23 +320,7 @@ def search(args):
         except Exception as e:
             print("During LLM generate new solution:")
             print(e)
-            
-            if PRINT_LLM_DEBUG:
-                # attempt to dump existing solution
-                try:
-                    with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
-                        json.dump(next_solution, json_file, indent=4)
-                except NameError:
-                    pass
-                # dump exception
-                with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'a') as json_file:
-                    json.dump({'exception': str(e)}, json_file, indent=4)
             continue
-        else:
-            if PRINT_LLM_DEBUG:
-                # dump existing solution
-                with open(os.path.join(args.expr_home_dir, f"solution_{n}.json"), 'w') as json_file:
-                    json.dump(next_solution, json_file, indent=4)
 
         acc_list = []
         # eval next solution
@@ -431,6 +443,7 @@ def evaluate_forward_fn(args, forward_str):
             return hard_score
         except Exception as e:
             # print(e)
+            
             return 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -439,8 +452,7 @@ def evaluate_forward_fn(args, forward_str):
     print("acc:", bootstrap_confidence_interval(acc_list))
     return acc_list
 
-
-if __name__ == "__main__":
+def setup_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--val_data_path', type=str, default='dataset/sampled_arc_val_data.pkl')
     parser.add_argument('--test_data_path', type=str, default='dataset/sampled_arc_test_data.pkl')
@@ -448,56 +460,65 @@ if __name__ == "__main__":
     parser.add_argument('--multiprocessing', action='store_true', default=True)
     parser.add_argument('--max_workers', type=int, default=32)
     parser.add_argument('--debug', action='store_true', default=True)
-    parser.add_argument('--save_dir', type=str, default='results/')
-    parser.add_argument('--expr_name', type=str, default='arc_gpt4o_mini_results')
+    parser.add_argument('--save_dir', type=str, default='temp/')
+    parser.add_argument('--expr_name', type=str, default=None)
     parser.add_argument('--n_generation', type=int, default=25)
     parser.add_argument('--reflect_max', type=int, default=3)
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--model',
                         type=str,
-                        default='gpt-4o-mini-2024-07-18',
-                        choices=['gpt-4o-mini-2024-07-18','gpt-4-turbo-2024-04-09', 'gpt-3.5-turbo-0125', 'gpt-4o-2024-05-13'])
+                        default='glm-4-flash',
+                        choices=['gpt-4o-mini-2024-07-18',
+                                 'gpt-4-turbo-2024-04-09', 
+                                 'gpt-3.5-turbo-0125', 
+                                 'gpt-4o-2024-05-13',
+                                 'gemini-1.5-flash',
+                                 'glm-4-flash',
+                                 'glm-4-plus'
+                                 ])
 
     args = parser.parse_args()
+    if args.expr_name is None:
+        args.expr_name = "arc_" + args.model + "_results"
+        
+    if not os.path.exists(args.save_dir):
+        os.mkdir(args.save_dir)
+        
     args.expr_home_dir = os.path.join(args.save_dir, args.expr_name)
     if not os.path.exists(args.expr_home_dir):
         os.mkdir(args.expr_home_dir)
+        
     # Save args to a JSON file
     args_file = os.path.join(args.expr_home_dir, 'config.json')
     with open(args_file, 'w') as f:
         json.dump(vars(args), f, indent=4)
         
-    if args.debug:
-        PRINT_LLM_DEBUG = True
-        # enable LLMAgent debug
-        def query(self, input_infos: list, instruction, iteration_idx=-1) -> dict:
-            system_prompt, prompt = self.generate_prompt(input_infos, instruction)
-            try:
-                response_json = {}
-                response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
-                with open(os.path.join(args.expr_home_dir, f"experiment.json"), 'a') as json_file:
-                        json.dump(response_json, json_file, indent=4)
-                if len(response_json) != len(self.output_fields):
-                    # try to fill in the missing field
-                    for key in self.output_fields:
-                        if not key in response_json and len(response_json) < len(self.output_fields):
-                            response_json[key] = ''
-                    for key in copy.deepcopy(list(response_json.keys())):
-                        if len(response_json) > len(self.output_fields) and not key in self.output_fields:
-                            del response_json[key]
-            except Exception as e:
-                if "maximum context length" in str(e) and SEARCHING_MODE:
-                    raise AssertionError("The context is too long. Please try to design the agent to have shorter context.")
-                else:
-                    raise e
-                
-            output_infos = []
-            for key, value in response_json.items():
-                info = Info(key, self.__repr__(), value, iteration_idx)
-                output_infos.append(info)
-            return output_infos
-        setattr(LLMAgentBase, "query", query)
+    return args
+
+def config_logger(args):
+    def filter(record):
+        assert isinstance(record, logging.LogRecord)
+        return record.name == '__main__'
+    
+    
+    file_handler = logging.FileHandler(
+        os.path.join(args.expr_home_dir, "experiment.log"), 
+        encoding="utf-8",
+        mode='w'
+    )
+    file_handler.addFilter(filter)
+    
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format='%(name)s - %(asctime)s - %(levelname)s - %(message)s',
+        handlers=[file_handler],
+    )
+
+if __name__ == "__main__":
+    args = setup_args()
         
+    config_logger(args)
+    
     # search
     SEARCHING_MODE = True
     search(args)

@@ -214,7 +214,7 @@ class AgentSystem():
         try:
             exec(code, {}, local_vars)
         except Exception as e:
-            return gen_output(f"Error during code execution: {e}"), correct_examples, wrong_examples
+            return gen_output(f"Error during code execution: {repr(e)}"), correct_examples, wrong_examples
         if 'transform' not in local_vars:
             return gen_output("Function 'transform' not found in the code."), correct_examples, wrong_examples
 
@@ -228,7 +228,7 @@ class AgentSystem():
             try:
                 transformed_grid = transform(input_grid)
             except Exception as e:
-                return gen_output("Error during function execution: {e}"), correct_examples, wrong_examples
+                return gen_output(f"Error during function execution: {repr(e)}"), correct_examples, wrong_examples
 
             if transformed_grid == output_grid:
                 feedback += f"Your transform function generates a CORRECT answer in Example {idx}!\n\n"
@@ -258,7 +258,7 @@ class AgentSystem():
         try:
             exec(code, {}, local_vars)
         except Exception as e:
-            return gen_output(f"Error during code execution: {e}")
+            return gen_output(f"Error during code execution: {repr(e)}")
         if 'transform' not in local_vars:
             return gen_output("Function 'transform' not found in the code.")
 
@@ -267,7 +267,7 @@ class AgentSystem():
             transform_output = transform(test_input)
             transform_output = list_to_string(transform_output)
         except Exception as e:
-            return gen_output("Error during function execution: {e}")
+            return gen_output(f"Error during function execution: {repr(e)}")
 
         return gen_output(transform_output)
 
@@ -328,7 +328,7 @@ def search(args):
             next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
         except Exception as e:
             print("During LLM generate new solution:")
-            print(e)
+            print(repr(e))
             logger = logging.getLogger(__name__)
             logger.exception(e)
             continue
@@ -344,16 +344,16 @@ def search(args):
                 break
             except Exception as e:
                 print("During evaluation:")
-                print(e)
+                print(repr(e))
                 logger = logging.getLogger(__name__)
                 logger.exception(e)
                 msg_list.append({"role": "assistant", "content": str(next_solution)})
-                msg_list.append({"role": "user", "content": f"Error during evaluation:\n{e}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
+                msg_list.append({"role": "user", "content": f"Error during evaluation:\n{repr(e)}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
                 try:
                     next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
                 except Exception as e:
                     print("During LLM generate new solution:")
-                    print(e)
+                    print(repr(e))
                     continue
                 continue
         if not acc_list:
@@ -398,7 +398,7 @@ def evaluate(args):
         try:
             acc_list = evaluate_forward_fn(args, sol["code"])
         except Exception as e:
-            # print(e)
+            # print(repr(e))
             # continue
             raise e
         fitness_str = bootstrap_confidence_interval(acc_list)
@@ -455,7 +455,7 @@ def evaluate_forward_fn(args, forward_str):
             hard_score = eval_solution(res, arc_data, soft_eval=False)
             return hard_score
         except Exception as e:
-            print(e)
+            print(repr(e))
             logger = logging.getLogger(__name__)
             logger.exception(e) 
             return 0

@@ -28,7 +28,7 @@ from utils import random_id, format_arc_data, eval_solution, list_to_string, boo
 
 Info = namedtuple('Info', ['name', 'author', 'content', 'iteration_idx'])
 
-FORMAT_INST = lambda request_keys: f"""# Output Format:\nReply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a WELL-FORMED JSON object!\n"""
+FORMAT_INST = lambda request_keys: f"""# Output Format:\nReply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a WELL-FORMED JSON object!\nDO NOT add ```json or ```\nDO NOT write code outside of the json field"""
 ROLE_DESC = lambda role: f"You are a {role}.\n\n"
 SYSTEM_MSG = ""
 CODE_INST = "You will write code to solve this task by creating a function named `transform`. This function should take a single argument, the input grid as `list[list[int]]`, and returns the transformed grid (also as `list[list[int]]`). You should make sure that you implement a version of the transformation that works for both example and test inputs. Make sure that the transform function is capable of handling both example and test inputs effectively, reflecting the learned transformation rules from the Examples inputs and outputs."
@@ -54,6 +54,7 @@ def get_json_response_from_gpt(
     )
     content = response.choices[0].message.content
     
+    
     logger = logging.getLogger(__name__)
     logger.debug('REQUEST\n' + str([
             {"role": "system", "content": system_message},
@@ -61,6 +62,10 @@ def get_json_response_from_gpt(
         ]))
     logger.debug('RESPONSE\n' + str(content))
     
+    # somehow glm tend to do this
+    if content is not None:
+        content = content.lstrip('```json').rstrip('```')
+        
     try:
         json_dict = json.loads(content) #type: ignore
     except:
@@ -86,6 +91,10 @@ def get_json_response_from_gpt_reflect(
     logger = logging.getLogger(__name__)
     logger.debug('REQUEST\n' + str(msg_list))
     logger.debug('RESPONSE\n' + str(content))
+    
+    # somehow glm tend to do this
+    if content is not None:
+        content = content.lstrip('```json').rstrip('```')
     
     try:
         json_dict = json.loads(content) #type: ignore
@@ -320,6 +329,8 @@ def search(args):
         except Exception as e:
             print("During LLM generate new solution:")
             print(e)
+            logger = logging.getLogger(__name__)
+            logger.exception(e)
             continue
 
         acc_list = []
@@ -334,6 +345,8 @@ def search(args):
             except Exception as e:
                 print("During evaluation:")
                 print(e)
+                logger = logging.getLogger(__name__)
+                logger.exception(e)
                 msg_list.append({"role": "assistant", "content": str(next_solution)})
                 msg_list.append({"role": "user", "content": f"Error during evaluation:\n{e}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
                 try:
@@ -442,8 +455,9 @@ def evaluate_forward_fn(args, forward_str):
             hard_score = eval_solution(res, arc_data, soft_eval=False)
             return hard_score
         except Exception as e:
-            # print(e)
-            
+            print(e)
+            logger = logging.getLogger(__name__)
+            logger.exception(e) 
             return 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

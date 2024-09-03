@@ -1,6 +1,5 @@
-- [ ] JSON experiment setting
+- [X] JSON experiment setting
   - [X] Saving
-  - [ ] Reading
 - [X] Design log
   - [x] next_solution reference in `finally` but not assigned in `try`
   - [X] exception output in `threadpool` in `evaluate_forward_fn`
@@ -13,7 +12,7 @@
     - [ ] For Design
     - [ ] For Agent
   - [ ] Zhipu API
-    - [ ] For Design
+    - [X] For Design
     - [X] For Agent
     - [ ] Make GLM4-flash work  
   - [ ] Other free models?

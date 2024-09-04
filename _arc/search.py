@@ -28,7 +28,7 @@ from utils import random_id, format_arc_data, eval_solution, list_to_string, boo
 
 Info = namedtuple('Info', ['name', 'author', 'content', 'iteration_idx'])
 
-FORMAT_INST = lambda request_keys: f"""# Output Format:\nReply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a WELL-FORMED JSON object!\nDO NOT add ```json or ```\nDO NOT write code outside of the json field"""
+FORMAT_INST = lambda request_keys: f"""# Output Format:\nReply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a WELL-FORMED JSON object!\nDO NOT add ```json or ```\nUSE DOUBLE QUOTES " INSTEAD OF SINGLE QUATES ' TO QUOTE PROPERTY NAMES AND FIELDS\nDO NOT write code outside of the json field\n"""
 ROLE_DESC = lambda role: f"You are a {role}.\n\n"
 SYSTEM_MSG = ""
 CODE_INST = "You will write code to solve this task by creating a function named `transform`. This function should take a single argument, the input grid as `list[list[int]]`, and returns the transformed grid (also as `list[list[int]]`). You should make sure that you implement a version of the transformation that works for both example and test inputs. Make sure that the transform function is capable of handling both example and test inputs effectively, reflecting the learned transformation rules from the Examples inputs and outputs."
@@ -481,7 +481,7 @@ def setup_args():
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--model',
                         type=str,
-                        default='glm-4-flash',
+                        default='glm-4-plus',
                         choices=['gpt-4o-mini-2024-07-18',
                                  'gpt-4-turbo-2024-04-09', 
                                  'gpt-3.5-turbo-0125', 

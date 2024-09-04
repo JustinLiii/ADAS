@@ -1,3 +1,4 @@
+- [ ] Solve none response or `{}` response from Zhipu API
 - [ ] Redesign get_response:
   - [ ] Can we merge `get_json_response_from_gpt` and `get_json_response_from_gpt_reflect` ?
   - [ ] Better reflex formatting error to next round
@@ -6,13 +7,18 @@
   - [ ] Zhipu API
     - [X] For Design
     - [X] For Agent
-    - [ ] Make GLM4-flash work  
+    - [ ] Make GLM4-flash work
+      - [X] Sturctural Generation for Agent
+      - [ ] Sturctural Generation for Designer
   - [ ] Gemini API
     - [ ] For Design
     - [ ] For Agent
   - [ ] Other free models?
   - [ ] Other deployable models?
 - [ ] Outside configurable LLMAgentBase
+- [ ] Faster evaluation
+- [ ] Detail statistic on experiment token cost
+- [ ] Get a GPT-4 + GPT-3.5 generation log for reference
 
 - [X] JSON experiment setting
   - [X] Saving
@@ -21,3 +27,6 @@
   - [X] exception output in `threadpool` in `evaluate_forward_fn`
   - [X] Use Logger
 - [X] Better Experiment Naming
+
+
+- 用glm4 plus做agent模型的准确率是13%上下

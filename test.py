@@ -24,5 +24,5 @@ def forward(self, taskInfo):
             consistency_agent = LLMAgentBase(['thinking', 'code'], 'Consistency Agent')
             final_thinking, final_code = consistency_agent([taskInfo] + refined_solutions, consistency_instruction)
             final_output = self.get_test_output_from_code(final_code)
-            return final_output
+    return final_output
         

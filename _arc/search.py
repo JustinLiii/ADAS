@@ -41,6 +41,7 @@ SEARCHING_MODE = True
 def get_json_response_from_gpt(
         msg,
         model,
+        keys,
         system_message,
         temperature=0.5
 ) -> dict:
@@ -68,6 +69,22 @@ def get_json_response_from_gpt(
         
     try:
         json_dict = json.loads(content) #type: ignore
+    except json.JSONDecodeError:
+        response = client.chat.completions.create(
+            model='glm-4-flash',
+            messages=[
+                {"role": "system", "content": f"rewrite to JSON object with and only with keys {keys}, response should only be a JSON object"},
+                {"role": "user", "content": content}, # type:ignore
+            ],
+            temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        logger.debug('REFORMAT\n' + str(content))
+        if content is not None:
+            content = content.lstrip('```json').rstrip('```')
+        
+    try:
+        json_dict = json.loads(content) #type: ignore
     except:
         json_dict = {}
     # cost = response.usage.completion_tokens / 1000000 * 15 + response.usage.prompt_tokens / 1000000 * 5
@@ -78,6 +95,7 @@ def get_json_response_from_gpt(
 @backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt_reflect(
         msg_list,
+        keys,
         model,
         temperature=0.8
 ) -> dict:
@@ -95,10 +113,26 @@ def get_json_response_from_gpt_reflect(
     # somehow glm tend to do this
     if content is not None:
         content = content.lstrip('```json').rstrip('```')
+    try:
+        json_dict = json.loads(content) #type: ignore
+    except json.JSONDecodeError:
+        response = client.chat.completions.create(
+            model='glm-4-flash',
+            messages=[
+                {"role": "system", "content": f"rewrite to JSON object with and only with keys {keys}, response should only be a JSON object"},
+                {"role": "user", "content": content}, # type:ignore
+            ],
+            temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        logger.debug('REFORMAT\n' + str(content))
+        if content is not None:
+            content = content.lstrip('```json').rstrip('```')
     
     try:
         json_dict = json.loads(content) #type: ignore
-    except:
+    except Exception as e:
+        print(e)
         json_dict = {}
     assert not json_dict is None
     return json_dict
@@ -164,7 +198,7 @@ class LLMAgentBase():
         system_prompt, prompt = self.generate_prompt(input_infos, instruction)
         try:
             response_json = {}
-            response_json = get_json_response_from_gpt(prompt, self.model, system_prompt, self.temperature)
+            response_json = get_json_response_from_gpt(prompt, self.model, self.output_fields, system_prompt, self.temperature)
             if len(response_json) != len(self.output_fields):
                 # try to fill in the missing field
                 for key in self.output_fields:
@@ -309,23 +343,24 @@ def search(args):
 
     for n in range(start, args.n_generation):
         print(f"============Generation {n + 1}=================")
+        output_fields = ["thought", "name", "code"]
         system_prompt, prompt = get_prompt(archive)
         msg_list = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
         try:
-            next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+            next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
 
             Reflexion_prompt_1, Reflexion_prompt_2 = get_reflexion_prompt(archive[-1] if n > 0 else None)
             # Reflexion 1
             msg_list.append({"role": "assistant", "content": str(next_solution)})
             msg_list.append({"role": "user", "content": Reflexion_prompt_1})
-            next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+            next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
             # Reflexion 2
             msg_list.append({"role": "assistant", "content": str(next_solution)})
             msg_list.append({"role": "user", "content": Reflexion_prompt_2})
-            next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+            next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
         except Exception as e:
             print("During LLM generate new solution:")
             print(repr(e))
@@ -350,7 +385,7 @@ def search(args):
                 msg_list.append({"role": "assistant", "content": str(next_solution)})
                 msg_list.append({"role": "user", "content": f"Error during evaluation:\n{repr(e)}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
                 try:
-                    next_solution = get_json_response_from_gpt_reflect(msg_list, args.model)
+                    next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
                 except Exception as e:
                     print("During LLM generate new solution:")
                     print(repr(e))
@@ -398,9 +433,11 @@ def evaluate(args):
         try:
             acc_list = evaluate_forward_fn(args, sol["code"])
         except Exception as e:
-            # print(repr(e))
-            # continue
-            raise e
+            logger = logging.getLogger(__name__)
+            logger.exception(e)
+            print(repr(e))
+            continue
+            # raise e
         fitness_str = bootstrap_confidence_interval(acc_list)
         sol['test_fitness'] = fitness_str
         eval_archive.append(sol)

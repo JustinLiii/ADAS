@@ -1,23 +1,18 @@
-- [ ] Solve none response or `{}` response from Zhipu API
+- [ ] LLM Generated code Sanbox
+  - [ ] OOM Problem
+  - [ ] Dead Loop (Timeout)
+  - [ ] Console output
+  - [ ] Errors
+  - [ ] System functions
+- [ ] API stop responding (May be because of LLM timeout instead of dead loop?)
 - [ ] Redesign get_response:
   - [ ] Can we merge `get_json_response_from_gpt` and `get_json_response_from_gpt_reflect` ?
   - [ ] Better reflex formatting error to next round
 - [ ] Batch API
-- [ ] Swith Model (One of)
-  - [ ] Zhipu API
-    - [X] For Design
-    - [X] For Agent
-    - [ ] Make GLM4-flash work
-      - [X] Sturctural Generation for Agent
-      - [ ] Sturctural Generation for Designer
-  - [ ] Gemini API
-    - [ ] For Design
-    - [ ] For Agent
-  - [ ] Other free models?
-  - [ ] Other deployable models?
+- [X] Swith Model (To GPT-4o-mini + GLM-4-flash)
 - [ ] Outside configurable LLMAgentBase
 - [ ] Faster evaluation
-- [ ] Detail statistic on experiment token cost
+- [X] Detail statistic on experiment token cost
 - [ ] Get a GPT-4 + GPT-3.5 generation log for reference
 
 - [X] JSON experiment setting

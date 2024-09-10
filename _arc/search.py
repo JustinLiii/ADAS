@@ -15,20 +15,16 @@ from tqdm import tqdm
 from arc_prompt import get_init_archive, get_prompt, get_reflexion_prompt
 
 # TODO: 为什么把这个初始化写在这里 （怒
-try:
-    client = openai.OpenAI()
-except openai.OpenAIError as e:
-    print('===============================================================')
-    print('Cannot initialize OpenAI client for following reason:')
-    print(f' - {e}')
-    print('Trying other clients')
-    print('===============================================================')
+ZHIPU_API_KEY = os.environ["ZHIPU_API_KEY"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+zhipu_client = openai.OpenAI(base_url="https://open.bigmodel.cn/api/paas/v4/", api_key=ZHIPU_API_KEY)
+openai_client = openai.OpenAI(base_url="https://api.openai.com/v1", api_key=OPENAI_API_KEY)
 
 from utils import random_id, format_arc_data, eval_solution, list_to_string, bootstrap_confidence_interval
 
 Info = namedtuple('Info', ['name', 'author', 'content', 'iteration_idx'])
 
-FORMAT_INST = lambda request_keys: f"""# Output Format:\nReply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a WELL-FORMED JSON object!\nDO NOT add ```json or ```\nUSE DOUBLE QUOTES " INSTEAD OF SINGLE QUATES ' TO QUOTE PROPERTY NAMES AND FIELDS\nDO NOT write code outside of the json field\n"""
+FORMAT_INST = lambda request_keys: f"""# Output Format:\nReply EXACTLY with the following JSON format.\n{str(request_keys)}\nDO NOT MISS ANY REQUEST FIELDS and ensure that your response is a WELL-FORMED JSON object!\nUSE DOUBLE QUOTES " INSTEAD OF SINGLE QUOTES ' FOR PROPERTY KEYS AND VALUES\nDO NOT write code outside of the json field\n"""
 ROLE_DESC = lambda role: f"You are a {role}.\n\n"
 SYSTEM_MSG = ""
 CODE_INST = "You will write code to solve this task by creating a function named `transform`. This function should take a single argument, the input grid as `list[list[int]]`, and returns the transformed grid (also as `list[list[int]]`). You should make sure that you implement a version of the transformation that works for both example and test inputs. Make sure that the transform function is capable of handling both example and test inputs effectively, reflecting the learned transformation rules from the Examples inputs and outputs."
@@ -36,8 +32,16 @@ CODE_INST = "You will write code to solve this task by creating a function named
 PRINT_LLM_DEBUG = False
 SEARCHING_MODE = True
 
+input_tokens = 0
+output_tokens = 0
 
-@backoff.on_exception(backoff.expo, openai.RateLimitError)
+def count_tokens(response):
+    input = response.usage.prompt_tokens
+    output = response.usage.completion_tokens
+    return input, output
+
+
+@backoff.on_exception(backoff.expo, [openai.RateLimitError, openai.BadRequestError], max_time=120)
 def get_json_response_from_gpt(
         msg,
         model,
@@ -45,15 +49,34 @@ def get_json_response_from_gpt(
         system_message,
         temperature=0.5
 ) -> dict:
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": msg},
-        ],
-        temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
-    )
+    global input_tokens
+    global output_tokens
+    
+    if 'gpt' in model:
+        client = openai_client
+    elif 'glm' in model:
+        client = zhipu_client
+    else:
+        raise AttributeError("Unsupported model")
+    
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": msg},
+            ],
+            temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
+        )
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.exception(e)
+        raise e
+        
     content = response.choices[0].message.content
+    i, o = count_tokens(response)
+    input_tokens += i
+    output_tokens += o
     
     
     logger = logging.getLogger(__name__)
@@ -62,6 +85,7 @@ def get_json_response_from_gpt(
             {"role": "user", "content": msg},
         ]))
     logger.debug('RESPONSE\n' + str(content))
+    logger.debug('TOKEN_COUNT\n' + f'input: {input_tokens}, output： {output_tokens}')
     
     # somehow glm tend to do this
     if content is not None:
@@ -70,16 +94,26 @@ def get_json_response_from_gpt(
     try:
         json_dict = json.loads(content) #type: ignore
     except json.JSONDecodeError:
-        response = client.chat.completions.create(
-            model='glm-4-flash',
-            messages=[
-                {"role": "system", "content": f"rewrite to JSON object with and only with keys {keys}, response should only be a JSON object"},
-                {"role": "user", "content": content}, # type:ignore
-            ],
-            temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
-        )
+        try:
+            response = client.chat.completions.create(
+                model='glm-4-flash',
+                messages=[
+                    {"role": "system", "content": f"rewrite to JSON object with and only with keys {keys}, response should only be a JSON object"},
+                    {"role": "user", "content": content}, # type:ignore
+                ],
+                temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception(e)
+            raise e
+            
         content = response.choices[0].message.content
+        i, o = count_tokens(response)
+        input_tokens += i
+        output_tokens += o
         logger.debug('REFORMAT\n' + str(content))
+        logger.debug('TOKEN_COUNT\n' + f'input: {input_tokens}, output： {output_tokens}')
         if content is not None:
             content = content.lstrip('```json').rstrip('```')
         
@@ -92,23 +126,41 @@ def get_json_response_from_gpt(
     return json_dict
 
 
-@backoff.on_exception(backoff.expo, openai.RateLimitError)
+@backoff.on_exception(backoff.expo, [openai.RateLimitError, openai.BadRequestError], max_time=120)
 def get_json_response_from_gpt_reflect(
         msg_list,
         keys,
         model,
         temperature=0.8
 ) -> dict:
-    response = client.chat.completions.create(
-        model=model,
-        messages=msg_list,
-        temperature=temperature, max_tokens=4096, stop=None, response_format={"type": "json_object"}
-    )
+    global input_tokens
+    global output_tokens
+    
+    if 'gpt' in model:
+        client = openai_client
+    elif 'glm' in model:
+        client = zhipu_client
+    else:
+        raise AttributeError("Unsupported model")
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=msg_list,
+            temperature=temperature, max_tokens=4096, stop=None, response_format={"type": "json_object"}
+        )
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.exception(e)
+        raise e
     content = response.choices[0].message.content
+    i, o = count_tokens(response)
+    input_tokens += i
+    output_tokens += o
     
     logger = logging.getLogger(__name__)
     logger.debug('REQUEST\n' + str(msg_list))
     logger.debug('RESPONSE\n' + str(content))
+    logger.debug('TOKEN_COUNT\n' + f'input: {input_tokens}, output： {output_tokens}')
     
     # somehow glm tend to do this
     if content is not None:
@@ -116,23 +168,33 @@ def get_json_response_from_gpt_reflect(
     try:
         json_dict = json.loads(content) #type: ignore
     except json.JSONDecodeError:
-        response = client.chat.completions.create(
-            model='glm-4-flash',
-            messages=[
-                {"role": "system", "content": f"rewrite to JSON object with and only with keys {keys}, response should only be a JSON object"},
-                {"role": "user", "content": content}, # type:ignore
-            ],
-            temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
-        )
+        try:
+            response = client.chat.completions.create(
+                model='glm-4-flash',
+                messages=[
+                    {"role": "system", "content": f"rewrite to JSON object with and only with keys {keys}, response should only be a JSON object"},
+                    {"role": "user", "content": content}, # type:ignore
+                ],
+                temperature=temperature, max_tokens=1024, stop=None, response_format={"type": "json_object"}
+            )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception(e)
+            raise e
         content = response.choices[0].message.content
+        i, o = count_tokens(response)
+        input_tokens += i
+        output_tokens += o
         logger.debug('REFORMAT\n' + str(content))
+        logger.debug('TOKEN_COUNT\n' + f'input: {input_tokens}, output： {output_tokens}')
         if content is not None:
             content = content.lstrip('```json').rstrip('```')
     
     try:
         json_dict = json.loads(content) #type: ignore
     except Exception as e:
-        print(e)
+        logger = logging.getLogger(__name__)
+        logger.exception(e)
         json_dict = {}
     assert not json_dict is None
     return json_dict
@@ -389,6 +451,8 @@ def search(args):
                 except Exception as e:
                     print("During LLM generate new solution:")
                     print(repr(e))
+                    logger = logging.getLogger(__name__)
+                    logger.exception(e)
                     continue
                 continue
         if not acc_list:
@@ -435,7 +499,6 @@ def evaluate(args):
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.exception(e)
-            print(repr(e))
             continue
             # raise e
         fitness_str = bootstrap_confidence_interval(acc_list)
@@ -492,7 +555,6 @@ def evaluate_forward_fn(args, forward_str):
             hard_score = eval_solution(res, arc_data, soft_eval=False)
             return hard_score
         except Exception as e:
-            print(repr(e))
             logger = logging.getLogger(__name__)
             logger.exception(e) 
             return 0
@@ -502,6 +564,27 @@ def evaluate_forward_fn(args, forward_str):
 
     print("acc:", bootstrap_confidence_interval(acc_list))
     return acc_list
+
+
+
+def config_logger(args):
+    def filter(record):
+        assert isinstance(record, logging.LogRecord)
+        return record.name == '__main__'
+    
+    
+    file_handler = logging.FileHandler(
+        os.path.join(args.expr_home_dir, "experiment.log"), 
+        encoding="utf-8",
+        mode='w'
+    )
+    file_handler.addFilter(filter)
+    
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format='%(name)s - %(asctime)s - %(levelname)s - %(message)s',
+        handlers=[file_handler],
+    )
 
 def setup_args():
     parser = argparse.ArgumentParser()
@@ -518,7 +601,7 @@ def setup_args():
     parser.add_argument('--debug_max', type=int, default=3)
     parser.add_argument('--model',
                         type=str,
-                        default='glm-4-plus',
+                        default='gpt-4o-mini-2024-07-18',
                         choices=['gpt-4o-mini-2024-07-18',
                                  'gpt-4-turbo-2024-04-09', 
                                  'gpt-3.5-turbo-0125', 
@@ -545,25 +628,6 @@ def setup_args():
         json.dump(vars(args), f, indent=4)
         
     return args
-
-def config_logger(args):
-    def filter(record):
-        assert isinstance(record, logging.LogRecord)
-        return record.name == '__main__'
-    
-    
-    file_handler = logging.FileHandler(
-        os.path.join(args.expr_home_dir, "experiment.log"), 
-        encoding="utf-8",
-        mode='w'
-    )
-    file_handler.addFilter(filter)
-    
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.WARNING,
-        format='%(name)s - %(asctime)s - %(levelname)s - %(message)s',
-        handlers=[file_handler],
-    )
 
 if __name__ == "__main__":
     args = setup_args()

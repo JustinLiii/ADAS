@@ -4,8 +4,11 @@ import json
 import os
 import pickle
 import logging
+import contextlib
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, TimeoutError
+from concurrent.futures.process import BrokenProcessPool
+import multiprocessing
 
 import backoff
 import numpy as np
@@ -13,6 +16,7 @@ import openai
 from tqdm import tqdm
 
 from arc_prompt import get_init_archive, get_prompt, get_reflexion_prompt
+from exec import _set_memory_limit, suppress_output
 
 # TODO: 为什么把这个初始化写在这里 （怒
 ZHIPU_API_KEY = os.environ["ZHIPU_API_KEY"]
@@ -41,7 +45,7 @@ def count_tokens(response):
     return input, output
 
 
-@backoff.on_exception(backoff.expo, [openai.RateLimitError, openai.BadRequestError], max_time=120)
+@backoff.on_exception(backoff.expo, openai.RateLimitError)
 def get_json_response_from_gpt(
         msg,
         model,
@@ -192,7 +196,7 @@ def get_json_response_from_gpt_reflect(
     
     try:
         json_dict = json.loads(content) #type: ignore
-    except Exception as e:
+    except json.JSONDecodeError as e:
         logger = logging.getLogger(__name__)
         logger.exception(e)
         json_dict = {}
@@ -309,6 +313,8 @@ class AgentSystem():
         local_vars = {}
         try:
             exec(code, {}, local_vars)
+        except KeyboardInterrupt as e:
+            raise e
         except Exception as e:
             return gen_output(f"Error during code execution: {repr(e)}"), correct_examples, wrong_examples
         if 'transform' not in local_vars:
@@ -323,6 +329,8 @@ class AgentSystem():
             output_grid = example['output']
             try:
                 transformed_grid = transform(input_grid)
+            except KeyboardInterrupt as e:
+                raise e
             except Exception as e:
                 return gen_output(f"Error during function execution: {repr(e)}"), correct_examples, wrong_examples
 
@@ -353,6 +361,8 @@ class AgentSystem():
         local_vars = {}
         try:
             exec(code, {}, local_vars)
+        except KeyboardInterrupt as e:
+            raise e
         except Exception as e:
             return gen_output(f"Error during code execution: {repr(e)}")
         if 'transform' not in local_vars:
@@ -362,6 +372,8 @@ class AgentSystem():
         try:
             transform_output = transform(test_input)
             transform_output = list_to_string(transform_output)
+        except KeyboardInterrupt as e:
+            raise e
         except Exception as e:
             return gen_output(f"Error during function execution: {repr(e)}")
 
@@ -405,74 +417,81 @@ def search(args):
 
     for n in range(start, args.n_generation):
         print(f"============Generation {n + 1}=================")
-        output_fields = ["thought", "name", "code"]
-        system_prompt, prompt = get_prompt(archive)
-        msg_list = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ]
-        try:
-            next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
-
-            Reflexion_prompt_1, Reflexion_prompt_2 = get_reflexion_prompt(archive[-1] if n > 0 else None)
-            # Reflexion 1
-            msg_list.append({"role": "assistant", "content": str(next_solution)})
-            msg_list.append({"role": "user", "content": Reflexion_prompt_1})
-            next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
-            # Reflexion 2
-            msg_list.append({"role": "assistant", "content": str(next_solution)})
-            msg_list.append({"role": "user", "content": Reflexion_prompt_2})
-            next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
-        except Exception as e:
-            print("During LLM generate new solution:")
-            print(repr(e))
-            logger = logging.getLogger(__name__)
-            logger.exception(e)
-            continue
-
-        acc_list = []
-        # eval next solution
-        # debug at most debug_max times for current agent
-        for _ in range(args.debug_max):
+        with set_logger_output(n+1):
+            output_fields = ["thought", "name", "code"]
+            system_prompt, prompt = get_prompt(archive)
+            msg_list = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
             try:
-                acc_list = evaluate_forward_fn(args, next_solution["code"])
-                if np.mean(acc_list) < 0.01 and SEARCHING_MODE:
-                    raise Exception("All 0 accuracy")
-                break
+                next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
+
+                Reflexion_prompt_1, Reflexion_prompt_2 = get_reflexion_prompt(archive[-1] if n > 0 else None)
+                # Reflexion 1
+                msg_list.append({"role": "assistant", "content": str(next_solution)})
+                msg_list.append({"role": "user", "content": Reflexion_prompt_1})
+                next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
+                # Reflexion 2
+                msg_list.append({"role": "assistant", "content": str(next_solution)})
+                msg_list.append({"role": "user", "content": Reflexion_prompt_2})
+                next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
+            except KeyboardInterrupt as e:
+                raise e
             except Exception as e:
-                print("During evaluation:")
+                print("During LLM generate new solution:")
                 print(repr(e))
                 logger = logging.getLogger(__name__)
                 logger.exception(e)
-                msg_list.append({"role": "assistant", "content": str(next_solution)})
-                msg_list.append({"role": "user", "content": f"Error during evaluation:\n{repr(e)}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
+                continue
+
+            acc_list = []
+            # eval next solution
+            # debug at most debug_max times for current agent
+            for _ in range(args.debug_max):
                 try:
-                    next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
+                    acc_list = evaluate_forward_fn(args, next_solution["code"])
+                    if np.mean(acc_list) < 0.01 and SEARCHING_MODE:
+                        raise Exception("All 0 accuracy")
+                    break
+                except KeyboardInterrupt as e:
+                    raise e
                 except Exception as e:
-                    print("During LLM generate new solution:")
+                    print("During evaluation:")
                     print(repr(e))
                     logger = logging.getLogger(__name__)
                     logger.exception(e)
+                    msg_list.append({"role": "assistant", "content": str(next_solution)})
+                    msg_list.append({"role": "user", "content": f"Error during evaluation:\n{repr(e)}\nCarefully consider where you went wrong in your latest implementation. Using insights from previous attempts, try to debug the current code to implement the same thought. Repeat your previous thought in 'thought', and put your thinking for debugging in 'debug_thought'"})
+                    try:
+                        next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
+                    except KeyboardInterrupt as e:
+                        raise e
+                    except Exception as e:
+                        print("During LLM generate new solution:")
+                        print(repr(e))
+                        logger = logging.getLogger(__name__)
+                        logger.exception(e)
+                        continue
                     continue
+            if not acc_list:
+                # don't save result if no successful code runs had been made
                 continue
-        if not acc_list:
-            # don't save result if no successful code runs had been made
-            continue
 
-        fitness_str = bootstrap_confidence_interval(acc_list)
-        next_solution['fitness'] = fitness_str
-        next_solution['generation'] = n + 1
+            fitness_str = bootstrap_confidence_interval(acc_list)
+            next_solution['fitness'] = fitness_str
+            next_solution['generation'] = n + 1
 
-        if 'debug_thought' in next_solution:
-            del next_solution['debug_thought']
-        if 'reflection' in next_solution:
-            del next_solution['reflection']
-        archive.append(next_solution)
+            if 'debug_thought' in next_solution:
+                del next_solution['debug_thought']
+            if 'reflection' in next_solution:
+                del next_solution['reflection']
+            archive.append(next_solution)
 
-        # save results
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w') as json_file:
-            json.dump(archive, json_file, indent=4)
+            # save results
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, 'w') as json_file:
+                json.dump(archive, json_file, indent=4)
 
 
 def evaluate(args):
@@ -496,6 +515,8 @@ def evaluate(args):
         print(f"current_gen: {sol['generation']}, current_idx: {current_idx}")
         try:
             acc_list = evaluate_forward_fn(args, sol["code"])
+        except KeyboardInterrupt as e:
+            raise e
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.exception(e)
@@ -512,8 +533,35 @@ def evaluate(args):
 
         current_idx += 1
 
+def call_forward(agent_task):
+    _set_memory_limit(512 * 1024 * 1024)
+    with suppress_output():
+        try:
+            agent, taskInfo, arc_data = agent_task
+            res = agent.forward(taskInfo)
+        except Exception as e:
+            # if exception in forward, raise
+            logger = multiprocessing.get_logger()
+            logger.exception(e)
+            raise e
+        
+        try:
+            origin_res = res
+            if isinstance(res, Info):
+                res = res.content
+            if isinstance(res, str):
+                res = eval(res)
+            hard_score = eval_solution(res, arc_data, soft_eval=False)
+            return hard_score
+        except KeyboardInterrupt as e:
+            raise e
+        except Exception as e:
+            logger = multiprocessing.get_logger()
+            logger.exception(e) 
+            return 0
 
 def evaluate_forward_fn(args, forward_str):
+    global debug_log_lock
     # dynamically define forward()
     # modified from https://github.com/luchris429/DiscoPOP/blob/main/scripts/launch_evo.py
     namespace = {}
@@ -534,65 +582,122 @@ def evaluate_forward_fn(args, forward_str):
     with open(arc_dir, 'rb') as pickle_file:
         arc_data_queue = pickle.load(pickle_file)
 
-    print(f"problem length: {len(arc_data_queue) * args.n_repreat}")
-    max_workers = min(len(arc_data_queue) * args.n_repreat, args.max_workers) if args.multiprocessing else 1
+    print(f"problem length: {len(arc_data_queue) * args.n_repeat}")
+    max_workers = min(len(arc_data_queue) * args.n_repeat, args.max_workers) if args.multiprocessing else 1
 
     agent_task_queue = []
     for arc_data in arc_data_queue:
         task_str, examples, test_input = format_arc_data(arc_data)
         taskInfo = Info('task', 'User', task_str, -1)
-        agent_task_queue.extend([(AgentSystem(examples, test_input), taskInfo, arc_data)] * args.n_repreat)
+        agent_task_queue.extend([(AgentSystem(examples, test_input), taskInfo, arc_data)] * args.n_repeat)
 
-    def call_forward(agent_task_queue):
-        agent, taskInfo, arc_data = agent_task_queue
-        res = agent.forward(taskInfo)
-        origin_res = res
-        try:
-            if isinstance(res, Info):
-                res = res.content
-            if isinstance(res, str):
-                res = eval(res)
-            hard_score = eval_solution(res, arc_data, soft_eval=False)
-            return hard_score
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.exception(e) 
-            return 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        acc_list = list(tqdm(executor.map(call_forward, agent_task_queue), total=len(agent_task_queue)))
-
+    # with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #     acc_list = list(tqdm(executor.map(call_forward, agent_task_queue, timeout=120), total=len(agent_task_queue)))
+    
+    logger = logging.getLogger(__name__)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(call_forward, task) for task in agent_task_queue]
+        acc_list = []
+        
+        timeout = False
+        for future in tqdm(futures):
+            try:
+                acc_list.append(future.result(timeout=60))
+            except TimeoutError:
+                logger.error(f"Task timed out")
+                acc_list.append(0)
+                timeout = True
+            except BrokenProcessPool as e:
+                # with debug_log_lock:
+                #     logger.exception(e)
+                # acc_list.append(0)
+                for process in list(executor._processes.values()):
+                    process.kill()
+                executor.shutdown(cancel_futures=True)s
+                raise e
+            except Exception as e:
+                logger.exception(e)
+                print('Vital/Unexpected exception, shutting down ProcessPool')
+                # kill process pool
+                for process in list(executor._processes.values()):
+                    process.kill()
+                executor.shutdown(cancel_futures=True)
+                raise e # catch forward() exception and other exception
+        
+        # if there's timeout process, force exit process pool
+        if timeout:
+            for process in list(executor._processes.values()):
+                process.kill()
+            print("ProcessPool killed for timeout process")
+                    
     print("acc:", bootstrap_confidence_interval(acc_list))
     return acc_list
 
 
 
 def config_logger(args):
-    def filter(record):
-        assert isinstance(record, logging.LogRecord)
-        return record.name == '__main__'
-    
-    
+    logger = logging.getLogger(__name__)
     file_handler = logging.FileHandler(
         os.path.join(args.expr_home_dir, "experiment.log"), 
         encoding="utf-8",
-        mode='w'
+        mode='a',
     )
-    file_handler.addFilter(filter)
+    file_handler.addFilter(lambda record: record.name == '__main__')
+    file_handler.setFormatter(logging.Formatter('%(name)s - %(asctime)s - %(levelname)s - %(message)s'))
     
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.WARNING,
-        format='%(name)s - %(asctime)s - %(levelname)s - %(message)s',
-        handlers=[file_handler],
+    logger.setLevel(logging.DEBUG if args.debug else logging.WARNING)
+    logger.addHandler(file_handler)
+    
+    multi_logger = multiprocessing.get_logger()
+    multi_logger.setLevel(logging.DEBUG if args.debug else logging.WARNING)
+    
+    for handler in copy.copy(multi_logger.handlers):
+        multi_logger.removeHandler(handler)
+    
+    multi_logger.addHandler(file_handler)
+    
+
+@contextlib.contextmanager
+def set_logger_output(n: int):
+    logger = logging.getLogger(__name__)
+    multi_logger = multiprocessing.get_logger()
+    
+    file_handler = logging.FileHandler(
+        os.path.join(args.expr_home_dir, f"generation_{n}.log"), 
+        encoding="utf-8",
+        mode='w',
     )
+    file_handler.addFilter(lambda record: record.name == '__main__')
+    file_handler.setFormatter(logging.Formatter('%(name)s - %(asctime)s - %(levelname)s - %(message)s'))
+    logger.removeHandler(logger.handlers[0])
+    logger.addHandler(file_handler)
+    multi_logger.removeHandler(multi_logger.handlers[0])
+    multi_logger.addHandler(file_handler)
+    
+    try:
+        yield
+    finally:
+        file_handler = logging.FileHandler(
+            os.path.join(args.expr_home_dir, "experiment.log"), 
+            encoding="utf-8",
+            mode='a',
+        )
+        file_handler.addFilter(lambda record: record.name == '__main__')
+        file_handler.setFormatter(logging.Formatter('%(name)s - %(asctime)s - %(levelname)s - %(message)s'))
+
+        logger.removeHandler(logger.handlers[0])
+        logger.addHandler(file_handler)
+        multi_logger.removeHandler(multi_logger.handlers[0])
+        multi_logger.addHandler(file_handler)
+    
 
 def setup_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--val_data_path', type=str, default='dataset/sampled_arc_val_data.pkl')
     parser.add_argument('--test_data_path', type=str, default='dataset/sampled_arc_test_data.pkl')
-    parser.add_argument('--n_repreat', type=int, default=5)
+    parser.add_argument('--n_repeat', type=int, default=5)
     parser.add_argument('--multiprocessing', action='store_true', default=True)
-    parser.add_argument('--max_workers', type=int, default=32)
+    parser.add_argument('--max_workers', type=int, default=24)
     parser.add_argument('--debug', action='store_true', default=True)
     parser.add_argument('--save_dir', type=str, default='temp/')
     parser.add_argument('--expr_name', type=str, default=None)

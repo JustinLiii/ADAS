@@ -1,10 +1,11 @@
 - [ ] LLM Generated code Sanbox
   - [ ] OOM Problem
-  - [ ] Dead Loop (Timeout)
-  - [ ] Console output
-  - [ ] Errors
+    - [X] Memory limit & Memory Error
+    - [ ] Recover from OS kill signal (BrokenProcessPool)
+  - [X] Dead Loop (Timeout)
+  - [X] Console output
+  - [X] Errors
   - [ ] System functions
-- [ ] API stop responding (May be because of LLM timeout instead of dead loop?)
 - [ ] Redesign get_response:
   - [ ] Can we merge `get_json_response_from_gpt` and `get_json_response_from_gpt_reflect` ?
   - [ ] Better reflex formatting error to next round
@@ -22,6 +23,7 @@
   - [X] exception output in `threadpool` in `evaluate_forward_fn`
   - [X] Use Logger
 - [X] Better Experiment Naming
-
+- [X] Per generation log
+- [X] Multiprocessing Logger
 
 - 用glm4 plus做agent模型的准确率是13%上下

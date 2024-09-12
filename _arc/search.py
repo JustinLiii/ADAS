@@ -563,7 +563,7 @@ def evaluate_forward_fn(args, forward_str):
     exec(forward_str, globals(), namespace)
     names = list(namespace.keys())
     if len(names) != 1:
-        raise AssertionError(f"{len(names)} things in namespace. Please only provide 1")
+        raise AssertionError(f"{len(names)} things in namespace. Please only provide 1 forward function")
     func = namespace[names[0]]
     if not callable(func):
         raise AssertionError(f"{func} is not callable")

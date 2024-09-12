@@ -6,10 +6,10 @@
     "max_workers": 32,
     "debug": true,
     "save_dir": "temp/",
-    "expr_name": "arc_glm-4-flash_results",
+    "expr_name": "arc_glm-4-plus_results",
     "n_generation": 25,
     "reflect_max": 3,
     "debug_max": 3,
-    "model": "glm-4-flash",
-    "expr_home_dir": "temp/arc_glm-4-flash_results"
+    "model": "glm-4-plus",
+    "expr_home_dir": "temp/arc_glm-4-plus_results"
 }

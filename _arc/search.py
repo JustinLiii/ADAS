@@ -6,8 +6,7 @@ import pickle
 import logging
 import contextlib
 from collections import namedtuple
-from concurrent.futures import ProcessPoolExecutor, TimeoutError
-from concurrent.futures.process import BrokenProcessPool
+from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
 
 import backoff
@@ -16,7 +15,7 @@ import openai
 from tqdm import tqdm
 
 from arc_prompt import get_init_archive, get_prompt, get_reflexion_prompt
-from exec import _set_memory_limit, suppress_output
+from exec import save_call_batch
 
 # TODO: 为什么把这个初始化写在这里 （怒
 ZHIPU_API_KEY = os.environ["ZHIPU_API_KEY"]
@@ -534,31 +533,27 @@ def evaluate(args):
         current_idx += 1
 
 def call_forward(agent_task):
-    _set_memory_limit(512 * 1024 * 1024)
-    with suppress_output():
-        try:
-            agent, taskInfo, arc_data = agent_task
-            res = agent.forward(taskInfo)
-        except Exception as e:
-            # if exception in forward, raise
-            logger = multiprocessing.get_logger()
-            logger.exception(e)
-            raise e
-        
-        try:
-            origin_res = res
-            if isinstance(res, Info):
-                res = res.content
-            if isinstance(res, str):
-                res = eval(res)
-            hard_score = eval_solution(res, arc_data, soft_eval=False)
-            return hard_score
-        except KeyboardInterrupt as e:
-            raise e
-        except Exception as e:
-            logger = multiprocessing.get_logger()
-            logger.exception(e) 
-            return 0
+    try:
+        agent, taskInfo, arc_data = agent_task
+        res = agent.forward(taskInfo)
+    except Exception as e:
+        # if exception in forward, raise
+        # logger = logging.getLogger(__name__)
+        # logger.exception(e)
+        raise e
+    
+    try:
+        origin_res = res
+        if isinstance(res, Info):
+            res = res.content
+        if isinstance(res, str):
+            res = eval(res)
+        hard_score = eval_solution(res, arc_data, soft_eval=False)
+        return hard_score
+    except Exception as e:
+        # logger = multiprocessing.get_logger()
+        # logger.exception(e) 
+        raise e
 
 def evaluate_forward_fn(args, forward_str):
     global debug_log_lock
@@ -593,42 +588,53 @@ def evaluate_forward_fn(args, forward_str):
 
     # with ThreadPoolExecutor(max_workers=max_workers) as executor:
     #     acc_list = list(tqdm(executor.map(call_forward, agent_task_queue, timeout=120), total=len(agent_task_queue)))
-    
+    ret = save_call_batch(call_forward, agent_task_queue, max_workers=max_workers, timeout=120)
+    acc_list = []
     logger = logging.getLogger(__name__)
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(call_forward, task) for task in agent_task_queue]
-        acc_list = []
+    e_num = 0
+    for r in ret:
+        if isinstance(r, Exception):
+            logger.error(r)
+            acc_list.append(0)
+            e_num += 1
+        else:
+            acc_list.append(r)
+    logger.debug(f"Exception number: {e_num} of total {len(acc_list)}")
+    # logger = logging.getLogger(__name__)
+    # with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    #     futures = [executor.submit(call_forward, task) for task in agent_task_queue]
+    #     acc_list = []
         
-        timeout = False
-        for future in tqdm(futures):
-            try:
-                acc_list.append(future.result(timeout=60))
-            except TimeoutError:
-                logger.error(f"Task timed out")
-                acc_list.append(0)
-                timeout = True
-            except BrokenProcessPool as e:
-                # with debug_log_lock:
-                #     logger.exception(e)
-                # acc_list.append(0)
-                for process in list(executor._processes.values()):
-                    process.kill()
-                executor.shutdown(cancel_futures=True)s
-                raise e
-            except Exception as e:
-                logger.exception(e)
-                print('Vital/Unexpected exception, shutting down ProcessPool')
-                # kill process pool
-                for process in list(executor._processes.values()):
-                    process.kill()
-                executor.shutdown(cancel_futures=True)
-                raise e # catch forward() exception and other exception
+    #     timeout = False
+    #     for future in tqdm(futures):
+    #         try:
+    #             acc_list.append(future.result(timeout=60))
+    #         except TimeoutError:
+    #             logger.error(f"Task timed out")
+    #             acc_list.append(0)
+    #             timeout = True
+    #         except BrokenProcessPool as e:
+    #             # with debug_log_lock:
+    #             #     logger.exception(e)
+    #             # acc_list.append(0)
+    #             for process in list(executor._processes.values()):
+    #                 process.kill()
+    #             executor.shutdown(cancel_futures=True)s
+    #             raise e
+    #         except Exception as e:
+    #             logger.exception(e)
+    #             print('Vital/Unexpected exception, shutting down ProcessPool')
+    #             # kill process pool
+    #             for process in list(executor._processes.values()):
+    #                 process.kill()
+    #             executor.shutdown(cancel_futures=True)
+    #             raise e # catch forward() exception and other exception
         
-        # if there's timeout process, force exit process pool
-        if timeout:
-            for process in list(executor._processes.values()):
-                process.kill()
-            print("ProcessPool killed for timeout process")
+    #     # if there's timeout process, force exit process pool
+    #     if timeout:
+    #         for process in list(executor._processes.values()):
+    #             process.kill()
+    #         print("ProcessPool killed for timeout process")
                     
     print("acc:", bootstrap_confidence_interval(acc_list))
     return acc_list
@@ -711,7 +717,6 @@ def setup_args():
                                  'gpt-4-turbo-2024-04-09', 
                                  'gpt-3.5-turbo-0125', 
                                  'gpt-4o-2024-05-13',
-                                 'gemini-1.5-flash',
                                  'glm-4-flash',
                                  'glm-4-plus'
                                  ])

@@ -72,6 +72,22 @@ def _eval_main(code, memory_limit = None, suppress = False):
             tb = None
         raise ExecutionException(''.join(traceback.format_exception(type(e), e, tb))) from None
     
+def _call_main(fn, arg, memory_limit = None, suppress = False):
+    if memory_limit is not None:
+        _set_memory_limit(memory_limit)
+    try:
+        with suppress_output(suppress):
+            return fn(arg) # may raise any error/exceptions but it's own SyntaxError, ValueError and MemoryError
+    except MemoryError as e:
+        raise e
+    except Exception as e:
+        if e.__traceback__ is not None:
+            # skip the first frame of the traceback, only show the evaled code
+            tb = e.__traceback__.tb_next
+        else:
+            tb = None
+        raise ExecutionException(''.join(traceback.format_exception(type(e), e, tb))) from None
+    
 def _eval_wrapper(code, memory_limit, suppress_output, pipe: Connection):
     try:
         pipe.send(_eval_main(code, memory_limit, suppress_output))
@@ -117,27 +133,38 @@ def save_eval(code, memory_limit = 512*1024*1024, timeout = 5, suppress_output =
         return ret
         
         
-def save_eval_batch(codes: list[str], memory_limit = 512*1024*1024, timeout = 5, suppress_output = True, max_workers=None) -> list[Any | Exception]:
-    # global logger
+def save_eval_batch(codes: list[str], 
+                    memory_limit = 512*1024*1024, 
+                    timeout = 5, 
+                    suppress_output = True, 
+                    max_workers=None) -> list[Any | Exception]:
+    return save_call_batch(_eval_main, codes, memory_limit, timeout, suppress_output, max_workers)
+
+def save_call_batch(fn, 
+                    args, 
+                    memory_limit = 512*1024*1024, 
+                    timeout = 5, 
+                    suppress_output = True, 
+                    max_workers=None) -> list[Any | Exception]:
     ret = []
-    # BE CAREFUL: shutdown the pool for all possible program exits
-    codes_dict = {i: code for i, code in enumerate(codes)}
+    args_dict = {i: arg for i, arg in enumerate(args)}
     
-    with tqdm(total=len(codes_dict)) as pbar:
-        while len(codes_dict) > 0:
+    with tqdm(total=len(args_dict)) as pbar:
+        while len(args_dict) > 0:
+            # BE CAREFUL: shutdown the pool for all possible program exits
             executor =  ProcessPoolExecutor(max_workers=max_workers)
-            futures = {executor.submit(_eval_main, code, memory_limit, suppress_output) : i for i, code in codes_dict.items()}
+            futures = {executor.submit(_call_main, fn, arg, memory_limit, suppress_output) : i for i, arg in args_dict.items()}
             for future in futures.keys():
                 try:
                     ret.append(future.result(timeout=timeout))
-                    codes_dict.pop(futures[future])
+                    args_dict.pop(futures[future])
                     pbar.update(1)
                 except (ExecutionException, ValueError, SyntaxError, MemoryError) as e:
-                    codes_dict.pop(futures[future])
+                    args_dict.pop(futures[future])
                     pbar.update(1)
                     ret.append(e)
                 except TimeoutError as e:
-                    codes_dict.pop(futures[future])
+                    args_dict.pop(futures[future])
                     pbar.update(1)
                     ret.append(TimeoutError("Task timed out, this may be due to an infinite loop"))
                     
@@ -145,7 +172,7 @@ def save_eval_batch(codes: list[str], memory_limit = 512*1024*1024, timeout = 5,
                     kill_executor(executor)
                     break
                 except CancelledError as e:
-                    codes_dict.pop(futures[future])
+                    args_dict.pop(futures[future])
                     pbar.update(1)
                     ret.append(e)
                 except BrokenProcessPool as e:
@@ -155,8 +182,8 @@ def save_eval_batch(codes: list[str], memory_limit = 512*1024*1024, timeout = 5,
                     break
                 except Exception as e:
                     kill_executor(executor)
-                    codes_dict = {} # stop the loop
-                    break
+                    executor.shutdown(cancel_futures=True)
+                    raise e from e
             executor.shutdown(cancel_futures=True)
     return ret
 

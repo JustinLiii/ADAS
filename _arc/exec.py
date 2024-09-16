@@ -146,11 +146,27 @@ def save_call_batch(fn,
                     timeout = 5, 
                     suppress_output = True, 
                     max_workers=None) -> list[Any | Exception]:
+    """
+    Executes a batch of function calls in parallel using a process pool executor.
+    Args:
+        fn (callable): The function to be called for each argument in the batch.
+        args (Iterable): The arguments to be passed to the function.
+        memory_limit (int, optional): The memory limit for each process in bytes. Defaults to 512*1024*1024.
+        timeout (int, optional): The maximum time in seconds to wait for each function call to complete. Defaults to 5.
+        suppress_output (bool, optional): Whether to suppress the output of each function call. Defaults to True.
+        max_workers (int, optional): The maximum number of worker processes to use. Defaults to None, applies to the creation of ProcessPoolExecutor.
+    Returns:
+        list[Any | Exception]: A list containing the return values or exceptions raised by each function call.
+    Raises:
+        Exception: If an unexpected error occurs during the execution of a function call.
+    """
+    
     ret = []
     args_dict = {i: arg for i, arg in enumerate(args)}
     
     with tqdm(total=len(args_dict)) as pbar:
         while len(args_dict) > 0:
+            timeout_accured = False
             # BE CAREFUL: shutdown the pool for all possible program exits
             executor =  ProcessPoolExecutor(max_workers=max_workers)
             futures = {executor.submit(_call_main, fn, arg, memory_limit, suppress_output) : i for i, arg in args_dict.items()}
@@ -167,10 +183,15 @@ def save_call_batch(fn,
                     args_dict.pop(futures[future])
                     pbar.update(1)
                     ret.append(TimeoutError("Task timed out, this may be due to an infinite loop"))
+                    # print("TimeoutError")
                     
                     # Kill executor and restart it
-                    kill_executor(executor)
-                    break
+                    # for f in futures.keys():
+                    #     f.cancel()
+                    # kill_executor(executor)
+                    # break
+                    # IF TOO MANY TIMEOUTS, REPEATLY KILLING THE EXECUTOR WILL TAKE TOO LONG
+                    timeout_accured = True
                 except CancelledError as e:
                     args_dict.pop(futures[future])
                     pbar.update(1)
@@ -178,12 +199,21 @@ def save_call_batch(fn,
                 except BrokenProcessPool as e:
                     # BrkenProcessPool is raised when the executor is shutdown
                     # most likely due to MemoryError from other tasks in the pool
+                    print("BrokenProcessPool, restarting...")
+                    # TODO: This is not guranteed to work, need to find a better way to handle this
+                    for f in futures.keys():
+                        f.cancel()
                     kill_executor(executor)
                     break
+                except KeyboardInterrupt as e:
+                    raise e
                 except Exception as e:
+                    print(f"Unexpected error: {e}")
                     kill_executor(executor)
                     executor.shutdown(cancel_futures=True)
-                    raise e from e
+                    raise e
+            if timeout_accured:
+                kill_executor(executor)
             executor.shutdown(cancel_futures=True)
     return ret
 
@@ -208,5 +238,5 @@ def save_call_batch(fn,
 #     code3 = 'wait()'
 #     code4 = 'wrong()'
     
-#     print(save_eval_batch([code, code2, code3, code4], 1024*1024))
-    # ret = save_eval_batch([code, code3, code], 1024*1024)
+#     print(save_eval_batch([code3, code, code3, code3], 1024*1024))
+#     ret = save_eval_batch([code, code3, code], 1024*1024)

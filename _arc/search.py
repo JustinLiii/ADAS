@@ -435,8 +435,6 @@ def search(args):
                 msg_list.append({"role": "assistant", "content": str(next_solution)})
                 msg_list.append({"role": "user", "content": Reflexion_prompt_2})
                 next_solution = get_json_response_from_gpt_reflect(msg_list, output_fields, args.model)
-            except KeyboardInterrupt as e:
-                raise e
             except Exception as e:
                 print("During LLM generate new solution:")
                 print(repr(e))
@@ -563,7 +561,7 @@ def evaluate_forward_fn(args, forward_str):
     exec(forward_str, globals(), namespace)
     names = list(namespace.keys())
     if len(names) != 1:
-        raise AssertionError(f"{len(names)} things in namespace. Please only provide 1 forward function")
+        raise AssertionError(f"{len(names)} things in namespace. Please only provide 1 function")
     func = namespace[names[0]]
     if not callable(func):
         raise AssertionError(f"{func} is not callable")
@@ -588,7 +586,7 @@ def evaluate_forward_fn(args, forward_str):
 
     # with ThreadPoolExecutor(max_workers=max_workers) as executor:
     #     acc_list = list(tqdm(executor.map(call_forward, agent_task_queue, timeout=120), total=len(agent_task_queue)))
-    ret = save_call_batch(call_forward, agent_task_queue, max_workers=max_workers, timeout=120)
+    ret = save_call_batch(call_forward, agent_task_queue, max_workers=max_workers, timeout=60)
     acc_list = []
     logger = logging.getLogger(__name__)
     e_num = 0
@@ -597,44 +595,12 @@ def evaluate_forward_fn(args, forward_str):
             logger.error(r)
             acc_list.append(0)
             e_num += 1
+            if e_num > (len(ret) / 2):
+                logger.debug(f"more than half result is erroneous in total {len(ret)}")
+                raise r
         else:
             acc_list.append(r)
-    logger.debug(f"Exception number: {e_num} of total {len(acc_list)}")
-    # logger = logging.getLogger(__name__)
-    # with ProcessPoolExecutor(max_workers=max_workers) as executor:
-    #     futures = [executor.submit(call_forward, task) for task in agent_task_queue]
-    #     acc_list = []
-        
-    #     timeout = False
-    #     for future in tqdm(futures):
-    #         try:
-    #             acc_list.append(future.result(timeout=60))
-    #         except TimeoutError:
-    #             logger.error(f"Task timed out")
-    #             acc_list.append(0)
-    #             timeout = True
-    #         except BrokenProcessPool as e:
-    #             # with debug_log_lock:
-    #             #     logger.exception(e)
-    #             # acc_list.append(0)
-    #             for process in list(executor._processes.values()):
-    #                 process.kill()
-    #             executor.shutdown(cancel_futures=True)s
-    #             raise e
-    #         except Exception as e:
-    #             logger.exception(e)
-    #             print('Vital/Unexpected exception, shutting down ProcessPool')
-    #             # kill process pool
-    #             for process in list(executor._processes.values()):
-    #                 process.kill()
-    #             executor.shutdown(cancel_futures=True)
-    #             raise e # catch forward() exception and other exception
-        
-    #     # if there's timeout process, force exit process pool
-    #     if timeout:
-    #         for process in list(executor._processes.values()):
-    #             process.kill()
-    #         print("ProcessPool killed for timeout process")
+    logger.debug(f"Exception number: {e_num} of total {len(ret)}")
                     
     print("acc:", bootstrap_confidence_interval(acc_list))
     return acc_list

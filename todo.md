@@ -1,19 +1,11 @@
-- [ ] LLM Generated code Sanbox
-  - [ ] OOM Problem
-    - [X] Memory limit & Memory Error
-    - [ ] Recover from OS kill signal (BrokenProcessPool)
-  - [X] Dead Loop (Timeout)
-  - [X] Console output
-  - [X] Errors
-  - [ ] System functions
 - [ ] Redesign get_response:
   - [ ] Can we merge `get_json_response_from_gpt` and `get_json_response_from_gpt_reflect` ?
   - [ ] Better reflex formatting error to next round
-- [ ] Batch API
-- [X] Swith Model (To GPT-4o-mini + GLM-4-flash)
+- [ ] KeyboardInterrupt during agent design (maybe due to backoff?)
 - [ ] Outside configurable LLMAgentBase
 - [ ] Faster evaluation
-- [X] Detail statistic on experiment token cost
+  - [ ] Batch API
+  - [ ] More ?
 - [ ] Get a GPT-4 + GPT-3.5 generation log for reference
 
 - [X] JSON experiment setting
@@ -24,6 +16,16 @@
   - [X] Use Logger
 - [X] Better Experiment Naming
 - [X] Per generation log
+- [X] Detail statistic on experiment token cost
+- [X] Swith Model (To GPT-4o-mini + GLM-4-flash)
 - [X] Multiprocessing Logger
+- [X] LLM Generated code Sanbox
+  - [X] OOM Problem
+    - [X] Memory limit & Memory Error
+    - [X] Recover from OS kill signal (BrokenProcessPool)
+  - [X] Dead Loop (Timeout)
+  - [X] Console output
+  - [X] Errors
+  - [X] System functions
 
 - 用glm4 plus做agent模型的准确率是13%上下

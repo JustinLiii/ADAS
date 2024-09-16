@@ -1,0 +1,15 @@
+{
+    "val_data_path": "dataset/sampled_arc_val_data.pkl",
+    "test_data_path": "dataset/sampled_arc_test_data.pkl",
+    "n_repeat": 5,
+    "multiprocessing": true,
+    "max_workers": 24,
+    "debug": true,
+    "save_dir": "temp/",
+    "expr_name": "arc_gpt-4o-mini-2024-07-18_results",
+    "n_generation": 25,
+    "reflect_max": 3,
+    "debug_max": 3,
+    "model": "gpt-4o-mini-2024-07-18",
+    "expr_home_dir": "temp/arc_gpt-4o-mini-2024-07-18_results"
+}
